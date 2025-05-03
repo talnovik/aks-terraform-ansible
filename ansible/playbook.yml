@@ -34,9 +34,8 @@
 - name: Install Helm Charts
   hosts: localhost
   vars:
-    env_vars: "{{ lookup('community.general.env', '.env', split_lines=False) }}"
+    HOSTNAME: "{{ lookup('ansible.builtin.env', 'HOSTNAME') }}"
   tasks:
-
     - name: Install Ingress Controller using Helm
       kubernetes.core.helm:
         name: ingress-nginx
@@ -68,7 +67,7 @@
               pathType: Prefix
               path: /
               hosts:
-                - "argocd.{{ env_vars.HOSTNAME }}"
+                - "argocd.{{ HOSTNAME }}"
               annotations:
                 kubernetes.io/ingress.class: "nginx"
           configs:
@@ -90,7 +89,7 @@
             pathType: Prefix
             path: /
             hosts:
-              - "dashboard.{{ env_vars.HOSTNAME }}"
+              - "dashboard.{{ HOSTNAME }}"
             annotations:
               kubernetes.io/ingress.class: "nginx"
 
@@ -127,7 +126,7 @@
                             kubernetes.io/ingress.class: nginx
                             nginx.ingress.kubernetes.io/rewrite-target: /
                           hosts:
-                            - "grafana.{{ env_vars.HOSTNAME }}"
+                            - "grafana.{{ HOSTNAME }}"
                           paths:
                             - /
                           pathType: Prefix
@@ -139,7 +138,7 @@
                             kubernetes.io/ingress.class: nginx
                             nginx.ingress.kubernetes.io/rewrite-target: /
                           hosts:
-                            - "prometheus.{{ env_vars.HOSTNAME }}"
+                            - "prometheus.{{ HOSTNAME }}"
                           paths:
                             - /
                           pathType: Prefix
@@ -166,7 +165,8 @@
 - name: Configure DNS
   hosts: localhost
   vars:
-    env_vars: "{{ lookup('community.general.env', '.env', split_lines=False) }}"
+    HOSTNAME: "{{ lookup('ansible.builtin.env', 'HOSTNAME') }}"
+    PASSWORD: "{{ lookup('ansible.builtin.env', 'PASSWORD') }}"
   tasks:
     - name: Get external IP of ingress controller service
       kubernetes.core.k8s_info:
@@ -178,5 +178,5 @@
 
     - name: Update Dynu DNS with external IP
       ansible.builtin.shell: |
-        curl -kv "http://api.dynu.com/nic/update?hostname={{ env_vars.HOSTNAME }}&myip={{ ingress_service_info.resources[0].status.loadBalancer.ingress[0].ip }}&password={{ env_vars.PASSWORD }}"
+        curl -kv "http://api.dynu.com/nic/update?hostname={{ HOSTNAME }}&myip={{ ingress_service_info.resources[0].status.loadBalancer.ingress[0].ip }}&password={{ PASSWORD }}"
       when: ingress_service_info.resources[0].status.loadBalancer.ingress[0].ip is defined
