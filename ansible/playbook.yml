@@ -1,0 +1,182 @@
+---
+- name: Add repositories
+  hosts: localhost
+  tasks:
+    - name: Add Helm repository for ArgoCD
+      kubernetes.core.helm_repository:
+        name: argo-cd
+        repo_url: https://argoproj.github.io/argo-helm
+
+    - name: Add Helm repository for Prometheus Stack
+      kubernetes.core.helm_repository:
+        name: prometheus-community
+        repo_url: https://prometheus-community.github.io/helm-charts
+
+    - name: Add Helm repository for Kubernetes Dashboard
+      kubernetes.core.helm_repository:
+        name: kubernetes-dashboard
+        repo_url: https://kubernetes.github.io/dashboard
+
+    - name: Add repository
+      kubernetes.core.helm_repository:
+        name: ingress-nginx
+        repo_url: https://kubernetes.github.io/ingress-nginx
+
+- name: Install net-tools on nodes
+  hosts: nodes
+  tasks:
+    - name: Install net-tools
+      ansible.builtin.apt:
+        name: net-tools
+        state: present
+      become: true
+
+- name: Install Helm Charts
+  hosts: localhost
+  vars:
+    env_vars: "{{ lookup('community.general.env', '.env', split_lines=False) }}"
+  tasks:
+
+    - name: Install Ingress Controller using Helm
+      kubernetes.core.helm:
+        name: ingress-nginx
+        chart_ref: ingress-nginx/ingress-nginx
+        chart_version: 4.10.3
+        release_namespace: ingress-nginx
+        create_namespace: true
+        state: present
+        values:
+          controller:
+            service:
+              type: LoadBalancer
+              annotations:
+                "service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path": "/healthz"
+              externalTrafficPolicy: "Local"
+              
+    - name: Install ArgoCD using Helm
+      kubernetes.core.helm:
+        name: argocd
+        chart_ref: argo-cd/argo-cd
+        chart_version: 5.36.2
+        release_namespace: argocd
+        create_namespace: true
+        state: present
+        values:
+          server:
+            ingress:
+              enabled: true
+              pathType: Prefix
+              path: /
+              hosts:
+                - "argocd.{{ env_vars.HOSTNAME }}"
+              annotations:
+                kubernetes.io/ingress.class: "nginx"
+          configs:
+            params:
+              server.insecure: true
+              server.disable.auth: true
+    
+    - name: Install Kubernetes Dashboard using Helm
+      kubernetes.core.helm:
+        name: kubernetes-dashboard
+        chart_ref: kubernetes-dashboard/kubernetes-dashboard
+        chart_version: 6.0.0
+        release_namespace: kubernetes-dashboard
+        create_namespace: true
+        state: present
+        values:
+          ingress:
+            enabled: true
+            pathType: Prefix
+            path: /
+            hosts:
+              - "dashboard.{{ env_vars.HOSTNAME }}"
+            annotations:
+              kubernetes.io/ingress.class: "nginx"
+
+    - name: Create ArgoCD Application
+      block:
+        - name: Get Kubernetes Cluster Name from Terraform
+          command: terraform -chdir=./../terraform output -raw kubernetes_cluster_name
+          register: kubernetes_cluster_name
+
+        - name: Create ArgoCD Application manifest for Prometheus
+          ansible.builtin.copy:
+            dest: ../argocd/prometheus-application.yaml
+            content: |
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: prometheus-stack
+                namespace: argocd
+              spec:
+                project: default
+                source:
+                  repoURL: https://prometheus-community.github.io/helm-charts
+                  chart: kube-prometheus-stack
+                  targetRevision: 70.9.0
+                  helm:
+                    parameters:
+                      - name: global.prometheus.externalLabels.cluster
+                        value: "{{ kubernetes_cluster_name.stdout }}"
+                    values: |
+                      grafana:
+                        ingress:
+                          enabled: true
+                          annotations:
+                            kubernetes.io/ingress.class: nginx
+                            nginx.ingress.kubernetes.io/rewrite-target: /
+                          hosts:
+                            - "grafana.{{ env_vars.HOSTNAME }}"
+                          paths:
+                            - /
+                          pathType: Prefix
+
+                      prometheus:
+                        ingress:
+                          enabled: true
+                          annotations:
+                            kubernetes.io/ingress.class: nginx
+                            nginx.ingress.kubernetes.io/rewrite-target: /
+                          hosts:
+                            - "prometheus.{{ env_vars.HOSTNAME }}"
+                          paths:
+                            - /
+                          pathType: Prefix
+                destination:
+                  server: https://kubernetes.default.svc
+                  namespace: monitoring
+                syncPolicy:
+                  automated:
+                    prune: true
+                    selfHeal: true
+                  syncOptions:
+                    - CreateNamespace=true
+                    - PruneLast=true
+                    - ApplyOutOfSyncOnly=true
+                    - Force=true
+                    - ServerSideApply=true
+
+        - name: Apply ArgoCD Application manifest for Prometheus
+          kubernetes.core.k8s:
+            state: present
+            definition: "{{ lookup('file', './../argocd/prometheus-application.yaml') }}"
+            namespace: argocd
+
+- name: Configure DNS
+  hosts: localhost
+  vars:
+    env_vars: "{{ lookup('community.general.env', '.env', split_lines=False) }}"
+  tasks:
+    - name: Get external IP of ingress controller service
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        namespace: ingress-nginx
+        name: ingress-nginx-controller
+      register: ingress_service_info
+
+    - name: Update Dynu DNS with external IP
+      ansible.builtin.shell: |
+        curl -kv "http://api.dynu.com/nic/update?hostname={{ env_vars.HOSTNAME }}&myip={{ ingress_service_info.resources[0].status.loadBalancer.ingress[0].ip }}&password={{ env_vars.PASSWORD }}"
+      when: ingress_service_info.resources[0].status.loadBalancer.ingress[0].ip is defined

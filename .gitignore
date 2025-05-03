@@ -1,0 +1,30 @@
+# Terraform files
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+*.tfplan
+
+# Logs
+*.log
+
+# Ignore kubeconfig files
+kubeconfig*
+
+# Ignore temporary files
+*.tmp
+*.swp
+*.bak
+.DS_Store
+
+# Environment files
+.env
+
+# Ignore shared directory
+shared/
+
+# Ignore argocd files
+argocd/
+
+# Ignore ansible inventory
+ansible/inventory.ini
